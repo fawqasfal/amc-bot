@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "amc-ticket-watcher"
+version = "0.1.0"
+description = "A guarded, browser-driven AMC showtime and seat watcher"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "quart>=0.20,<1",
+  "selenium>=4.24,<5",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8.3,<9",
+  "pytest-asyncio>=0.24,<1",
+]
+
+[project.scripts]
+amc-watcher = "amc_bot.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/amc_bot"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+pythonpath = ["src"]
