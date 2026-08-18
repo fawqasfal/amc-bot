@@ -40,8 +40,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--ambiguous-submit-retries",
         type=int,
-        default=1,
-        help="extra purchase clicks allowed when confirmation is ambiguous (default: 1)",
+        default=5,
+        help="extra purchase clicks allowed when confirmation is ambiguous (default: 5)",
     )
     parser.add_argument("--max-hours", type=float, default=12.0, help="maximum watcher runtime")
     parser.add_argument("--no-open-ui", action="store_true", help="do not open the localhost form automatically")

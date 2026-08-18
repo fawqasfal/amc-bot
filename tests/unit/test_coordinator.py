@@ -14,9 +14,14 @@ from amc_bot.state import Phase
 
 
 class FakePortal:
-    def __init__(self, *, human_gate_once: bool = False, ambiguous_once: bool = False):
+    def __init__(
+        self,
+        *,
+        human_gate_once: bool = False,
+        ambiguous_failures: int = 0,
+    ):
         self.human_gate_once = human_gate_once
-        self.ambiguous_once = ambiguous_once
+        self.ambiguous_failures = ambiguous_failures
         self.human_pending_checks = 0
         self.login_calls = 0
         self.selected = []
@@ -69,7 +74,7 @@ class FakePortal:
     def submit_order(self, guard):
         guard.require()
         self.submitted += 1
-        if self.ambiguous_once and self.submitted == 1:
+        if self.submitted <= self.ambiguous_failures:
             raise PurchaseOutcomeUnknown("fixture confirmation timeout")
         return PurchaseResult("http://fixture.invalid/confirmation", "fixture-123")
 
@@ -156,8 +161,8 @@ def test_human_gate_continues_automatically_when_challenge_clears():
     assert portal.login_calls == 2
 
 
-def test_ambiguous_purchase_is_retried_once():
-    portal = FakePortal(ambiguous_once=True)
+def test_ambiguous_purchase_retry_count_is_configurable():
+    portal = FakePortal(ambiguous_failures=1)
     coordinator = WatcherCoordinator(
         lambda: portal,
         live_purchases_allowed=True,
@@ -167,6 +172,15 @@ def test_ambiguous_purchase_is_retried_once():
     coordinator.join(3)
     assert coordinator.status()["phase"] == Phase.PURCHASED.value
     assert portal.submitted == 2
+
+
+def test_ambiguous_purchase_retries_five_times_by_default():
+    portal = FakePortal(ambiguous_failures=5)
+    coordinator = WatcherCoordinator(lambda: portal, live_purchases_allowed=True)
+    coordinator.start(payload_for(portal, dry_run=False))
+    coordinator.join(3)
+    assert coordinator.status()["phase"] == Phase.PURCHASED.value
+    assert portal.submitted == 6
 
 
 def test_coordinator_accepts_split_seats_when_no_contiguous_pair_exists():

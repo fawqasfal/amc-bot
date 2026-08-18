@@ -63,7 +63,7 @@ Useful options:
 --timezone America/New_York
 --poll-seconds 3
 --max-poll-seconds 120
---ambiguous-submit-retries 1
+--ambiguous-submit-retries 5
 --max-hours 12
 ```
 
@@ -74,13 +74,28 @@ fast, and backs off immediately on rate limits or transient failures.
 ## Payment verification
 
 A saved card does not guarantee a fully unattended checkout. The startup form
-accepts an optional saved-card CVV, retains it in memory only for that run, and
-autofills matching CVV/CVC controls. If AMC or the issuer asks for a one-time
-code, reauthentication, CAPTCHA, or 3-D Secure, complete it in Chrome; the bot
-detects when the challenge clears and resumes without another click.
+accepts an optional saved-card CVV and has a simple **Save this CVV locally for
+future runs** checkbox. When unchecked, the CVV is retained only for the current
+run and any previously saved value is removed. When checked, the app writes only
+the CVV to a user-private file (`0700` directory and `0600` file), never renders
+the saved digits into the page, and lets a blank CVV field reuse it on later
+runs. The default macOS location is:
+
+```text
+~/Library/Application Support/AMC Ticket Watcher/payment_cvv
+```
+
+On other platforms it uses `$XDG_DATA_HOME/amc-ticket-watcher/payment_cvv` or
+`~/.local/share/amc-ticket-watcher/payment_cvv`. Set `AMC_WATCHER_DATA_DIR` to
+override the directory. Uncheck the setup checkbox and start a run to delete the
+saved value.
+
+The watcher autofills matching CVV/CVC controls. If AMC or the issuer asks for a
+one-time code, reauthentication, CAPTCHA, or 3-D Secure, complete it in Chrome;
+the bot detects when the challenge clears and resumes without another click.
 
 If confirmation is ambiguous after the final order click, the watcher retries
-the purchase once by default (configurable with
+the purchase up to five times by default (configurable with
 `--ambiguous-submit-retries`). On confirmed purchase it leaves the confirmation
 tab open and stops all searching.
 

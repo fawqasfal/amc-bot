@@ -9,6 +9,8 @@ from typing import Any
 
 from quart import Quart, abort, jsonify, render_template, request
 
+from .local_secrets import LocalCvvStore
+
 
 _EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 _MAX_RADIUS_MILES = 500.0
@@ -44,17 +46,24 @@ def _form_values(form: Any) -> dict[str, Any]:
         "availability": form.getlist("availability"),
         "lincoln_square_70mm_imax_only": form.get("lincoln_square_70mm_imax_only")
         == "on",
+        "save_payment_cvv": form.get("save_payment_cvv") == "on",
         "dry_run": form.get("dry_run") == "on",
     }
 
 
-def _parse_payload(form: Any, *, live_purchases_allowed: bool) -> tuple[dict[str, Any] | None, list[str]]:
+def _parse_payload(
+    form: Any,
+    *,
+    live_purchases_allowed: bool,
+    saved_cvv: str | None = None,
+) -> tuple[dict[str, Any] | None, list[str]]:
     """Parse a MultiDict into a plain dict and validation messages."""
 
     errors: list[str] = []
     email = form.get("email", "").strip()
     password = form.get("password", "")
     payment_cvv = form.get("payment_cvv", "").strip()
+    save_payment_cvv = form.get("save_payment_cvv") == "on"
     primary_movie = form.get("primary_movie", "").strip()
     location = form.get("location", "").strip()
     aliases = []
@@ -81,6 +90,8 @@ def _parse_payload(form: Any, *, live_purchases_allowed: bool) -> tuple[dict[str
         errors.append("AMC password is too long.")
     if payment_cvv and (not payment_cvv.isdigit() or len(payment_cvv) not in {3, 4}):
         errors.append("Saved-card CVV must be 3 or 4 digits.")
+    if save_payment_cvv and not payment_cvv and not saved_cvv:
+        errors.append("Enter a CVV before choosing to save it for future runs.")
     if not primary_movie:
         errors.append("Enter a primary movie name.")
     elif len(primary_movie) > 200:
@@ -143,7 +154,9 @@ def _parse_payload(form: Any, *, live_purchases_allowed: bool) -> tuple[dict[str
     return {
         "email": email,
         "password": password,
-        "payment_cvv": payment_cvv,
+        "payment_cvv": payment_cvv or (saved_cvv if save_payment_cvv else ""),
+        "save_payment_cvv": save_payment_cvv,
+        "manage_saved_cvv": form.get("save_payment_cvv_present") == "1" or save_payment_cvv,
         "primary_movie": primary_movie,
         "aliases": aliases,
         "location": location,
@@ -162,7 +175,11 @@ async def _call_start(coordinator: Any, payload: dict[str, Any]) -> None:
         await result
 
 
-def create_app(coordinator: Any = None, live_purchases_allowed: bool = False) -> Quart:
+def create_app(
+    coordinator: Any = None,
+    live_purchases_allowed: bool = False,
+    cvv_store: LocalCvvStore | None = None,
+) -> Quart:
     """Build the bounded watcher UI.
 
     ``coordinator`` may expose either a synchronous or asynchronous ``start``.
@@ -175,6 +192,10 @@ def create_app(coordinator: Any = None, live_purchases_allowed: bool = False) ->
     app.config["MAX_CONTENT_LENGTH"] = 64 * 1024
     app.config["FORM_TOKEN"] = secrets.token_urlsafe(32)
     app.extensions["amc_status"] = _initial_status()
+    app.extensions["amc_cvv_store"] = cvv_store or LocalCvvStore()
+
+    def load_saved_cvv() -> str | None:
+        return app.extensions["amc_cvv_store"].load()
 
     @app.before_request
     async def require_local_host() -> None:
@@ -213,6 +234,10 @@ def create_app(coordinator: Any = None, live_purchases_allowed: bool = False) ->
 
     @app.get("/")
     async def index() -> str:
+        try:
+            has_saved_cvv = load_saved_cvv() is not None
+        except OSError:
+            has_saved_cvv = False
         return await render_template(
             "index.html",
             values={
@@ -224,6 +249,7 @@ def create_app(coordinator: Any = None, live_purchases_allowed: bool = False) ->
                 "ticket_count": "1",
                 "availability": [],
                 "lincoln_square_70mm_imax_only": False,
+                "save_payment_cvv": has_saved_cvv,
                 "dry_run": True,
             },
             errors=[],
@@ -239,8 +265,14 @@ def create_app(coordinator: Any = None, live_purchases_allowed: bool = False) ->
         if not valid_form_token(form):
             return "Invalid or missing local form token.", 403
         values = _form_values(form)
+        try:
+            saved_cvv = load_saved_cvv()
+        except OSError:
+            saved_cvv = None
         payload, errors = _parse_payload(
-            form, live_purchases_allowed=app.config["LIVE_PURCHASES_ALLOWED"]
+            form,
+            live_purchases_allowed=app.config["LIVE_PURCHASES_ALLOWED"],
+            saved_cvv=saved_cvv,
         )
         if errors:
             return (
@@ -270,6 +302,28 @@ def create_app(coordinator: Any = None, live_purchases_allowed: bool = False) ->
                 ),
                 503,
             )
+
+        save_payment_cvv = bool(payload.pop("save_payment_cvv"))
+        manage_saved_cvv = bool(payload.pop("manage_saved_cvv"))
+        if manage_saved_cvv:
+            try:
+                if save_payment_cvv:
+                    app.extensions["amc_cvv_store"].save(payload["payment_cvv"])
+                else:
+                    app.extensions["amc_cvv_store"].delete()
+            except (OSError, ValueError):
+                return (
+                    await render_template(
+                        "index.html",
+                        values=values,
+                        errors=["The locally saved CVV could not be updated."],
+                        status=current_status(),
+                        form_token=app.config["FORM_TOKEN"],
+                        live_purchases_allowed=app.config["LIVE_PURCHASES_ALLOWED"],
+                        weekdays=["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],
+                    ),
+                    500,
+                )
 
         try:
             await _call_start(coordinator, payload)  # type: ignore[arg-type]

@@ -1,6 +1,7 @@
 import pytest
 from werkzeug.datastructures import MultiDict
 
+from amc_bot.local_secrets import LocalCvvStore
 from amc_bot.web import create_app
 
 
@@ -46,6 +47,8 @@ async def test_home_page_has_accessible_form(app):
     assert 'name="password"' in body
     assert 'type="password"' in body
     assert 'name="availability"' in body
+    assert 'name="save_payment_cvv"' in body
+    assert "Save this CVV locally for future runs" in body
     assert 'value="0:18"' in body
     assert "PURCHASE" not in body
 
@@ -91,6 +94,50 @@ async def test_cvv_is_validated_and_never_echoed():
     assert response.status_code == 400
     assert "CVV must be 3 or 4 digits" in body
     assert "12x" not in body
+
+
+@pytest.mark.asyncio
+async def test_opt_in_saved_cvv_is_reused_without_rendering_digits(tmp_path):
+    coordinator = Coordinator()
+    store = LocalCvvStore(tmp_path / "private" / "payment_cvv")
+    app = create_app(coordinator, cvv_store=store)
+    app.config["FORM_TOKEN"] = "test-token"
+
+    first = form_data(save_payment_cvv="on", save_payment_cvv_present="1")
+    response = await app.test_client().post("/start", form=first)
+    assert response.status_code == 200
+    assert store.load() == "123"
+    assert coordinator.payload["payment_cvv"] == "123"
+
+    home = await app.test_client().get("/")
+    body = await home.get_data(as_text=True)
+    assert 'id="save-payment-cvv" name="save_payment_cvv" type="checkbox" checked' in body
+    assert ">123<" not in body
+    assert 'value="123"' not in body
+
+    second = form_data(
+        payment_cvv="",
+        save_payment_cvv="on",
+        save_payment_cvv_present="1",
+    )
+    response = await app.test_client().post("/start", form=second)
+    assert response.status_code == 200
+    assert coordinator.payload["payment_cvv"] == "123"
+
+
+@pytest.mark.asyncio
+async def test_unchecking_saved_cvv_removes_it(tmp_path):
+    coordinator = Coordinator()
+    store = LocalCvvStore(tmp_path / "private" / "payment_cvv")
+    store.save("123")
+    app = create_app(coordinator, cvv_store=store)
+    app.config["FORM_TOKEN"] = "test-token"
+
+    data = form_data(payment_cvv="", save_payment_cvv_present="1")
+    response = await app.test_client().post("/start", form=data)
+    assert response.status_code == 200
+    assert store.load() is None
+    assert coordinator.payload["payment_cvv"] == ""
 
 
 @pytest.mark.asyncio

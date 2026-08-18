@@ -46,8 +46,14 @@
           <input id="email" name="email" type="email" autocomplete="username" required value="{{ values.email }}">
           <label for="password">AMC password</label>
           <input id="password" name="password" type="password" autocomplete="current-password" required>
-          <label for="payment-cvv">Saved-card CVV <span class="hint">(optional; held in memory for this run)</span></label>
-          <input id="payment-cvv" name="payment_cvv" type="password" inputmode="numeric" pattern="[0-9]{3,4}" maxlength="4" autocomplete="off">
+          <label for="payment-cvv">Saved-card CVV <span class="hint">(optional{% if values.save_payment_cvv %}; leave blank to use the locally saved value{% endif %})</span></label>
+          <input id="payment-cvv" name="payment_cvv" type="password" inputmode="numeric" pattern="[0-9]{3,4}" maxlength="4" autocomplete="cc-csc">
+          <input type="hidden" name="save_payment_cvv_present" value="1">
+          <label class="check-row" for="save-payment-cvv">
+            <input id="save-payment-cvv" name="save_payment_cvv" type="checkbox" {% if values.save_payment_cvv %}checked{% endif %}>
+            <span>Save this CVV locally for future runs</span>
+          </label>
+          <p class="hint">Unchecking this box removes any previously saved CVV.</p>
         </fieldset>
 
         <fieldset>

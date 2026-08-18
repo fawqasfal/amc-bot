@@ -91,7 +91,7 @@ class WatcherCoordinator:
         polling_policy: PollingPolicy | None = None,
         max_attempts: int = 2_160,
         max_runtime_seconds: float = 43_200,
-        ambiguous_submit_retries: int = 1,
+        ambiguous_submit_retries: int = 5,
         showtime_refresh_seconds: float = 300.0,
         rng: random.Random | None = None,
     ) -> None:
