@@ -57,6 +57,7 @@ _PAYMENT_ACTION = (
 )
 _CONFIRMATION = ("order confirmed", "purchase confirmed", "thank you for your purchase", "confirmation number")
 _RETRYABLE_CHECKOUT_ERRORS = (
+    "networkerror when attempting to fetch resource",
     "an error has occurred",
     "something went wrong",
     "we encountered an error",

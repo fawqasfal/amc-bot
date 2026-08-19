@@ -80,7 +80,12 @@ PAYMENT = """<!doctype html><html><body>
 </body></html>"""
 
 PURCHASE_ERROR = """<!doctype html><html><body>
-<div role="alert">An error has occurred. Please try again.</div>
+<div role="alert">AMC checkout: An error has occurred while processing the order.</div>
+<button>Place order</button>
+</body></html>"""
+
+PURCHASE_NETWORK_ERROR = """<!doctype html><html><body>
+<div role="alert">NetworkError when attempting to fetch resource.</div>
 <button>Place order</button>
 </body></html>"""
 
@@ -100,6 +105,7 @@ class FixtureHandler(BaseHTTPRequestHandler):
             "/challenge": CHALLENGE,
             "/payment": PAYMENT,
             "/purchase-error": PURCHASE_ERROR,
+            "/purchase-network-error": PURCHASE_NETWORK_ERROR,
         }.get(path, "not found")
         self.send_response(200 if body != "not found" else 404)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -223,13 +229,14 @@ def test_local_human_gate_is_detected_and_never_bypassed(driver):
             portal.page.ensure_not_blocked()
 
 
-def test_vague_purchase_error_is_recognized_as_retryable(driver):
+@pytest.mark.parametrize("path", ["purchase-error", "purchase-network-error"])
+def test_vague_purchase_error_substrings_are_recognized_as_retryable(driver, path):
     with fixture_server() as base_url:
         portal = SeleniumAmcPortal(
             driver,
             SeleniumPortalConfig(base_url=base_url, test_mode=True, element_timeout=1),
         )
-        driver.get(f"{base_url}purchase-error")
+        driver.get(f"{base_url}{path}")
         assert portal._retryable_checkout_error_present()
 
 

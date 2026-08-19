@@ -99,11 +99,18 @@ the purchase up to five times by default (configurable with
 `--ambiguous-submit-retries`). On confirmed purchase it leaves the confirmation
 tab open and stops all searching.
 
-An explicit but vague purchase-screen failure such as **An error has occurred**
-is treated differently from an ambiguous confirmation. The watcher stays on the
-checkout screen and retries without a limit, using a linear delay of 1, 2, 3,
-and so on up to a 10-second cap between attempts. The Stop watcher control still
-interrupts that wait immediately.
+An explicit but vague purchase-screen failure is treated differently from an
+ambiguous confirmation. Matching is case-insensitive and treats the configured
+phrases as substrings, including **An error has occurred** and **NetworkError
+when attempting to fetch resource.** The watcher stays on the checkout screen
+and retries without a limit, using a linear delay of 1, 2, 3, and so on up to a
+10-second cap between attempts. The Stop watcher control still interrupts that
+wait immediately.
+
+An outcome is “ambiguous” only when the order click occurred but the confirmation
+timeout expired without either a confirmation or one of those recognized
+temporary-error substrings. Ambiguous outcomes use the separately configurable
+five-retry limit.
 
 ## Testing without spending money
 
