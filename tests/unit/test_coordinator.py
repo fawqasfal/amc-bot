@@ -6,8 +6,17 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from amc_bot.coordinator import WatcherCoordinator, availability_from_hour_tokens
-from amc_bot.errors import HumanActionRequired, PurchaseDisabled, PurchaseOutcomeUnknown
+from amc_bot.coordinator import (
+    CheckoutRetryPolicy,
+    WatcherCoordinator,
+    availability_from_hour_tokens,
+)
+from amc_bot.errors import (
+    HumanActionRequired,
+    PurchaseDisabled,
+    PurchaseOutcomeUnknown,
+    RetryableCheckoutError,
+)
 from amc_bot.models import Seat
 from amc_bot.ports import PortalShowtime, PurchaseResult
 from amc_bot.state import Phase
@@ -19,9 +28,11 @@ class FakePortal:
         *,
         human_gate_once: bool = False,
         ambiguous_failures: int = 0,
+        retryable_checkout_failures: int = 0,
     ):
         self.human_gate_once = human_gate_once
         self.ambiguous_failures = ambiguous_failures
+        self.retryable_checkout_failures = retryable_checkout_failures
         self.human_pending_checks = 0
         self.login_calls = 0
         self.selected = []
@@ -74,6 +85,8 @@ class FakePortal:
     def submit_order(self, guard):
         guard.require()
         self.submitted += 1
+        if self.submitted <= self.retryable_checkout_failures:
+            raise RetryableCheckoutError("fixture temporary checkout error")
         if self.submitted <= self.ambiguous_failures:
             raise PurchaseOutcomeUnknown("fixture confirmation timeout")
         return PurchaseResult("http://fixture.invalid/confirmation", "fixture-123")
@@ -181,6 +194,56 @@ def test_ambiguous_purchase_retries_five_times_by_default():
     coordinator.join(3)
     assert coordinator.status()["phase"] == Phase.PURCHASED.value
     assert portal.submitted == 6
+
+
+def test_checkout_retry_policy_uses_bounded_linear_backoff():
+    policy = CheckoutRetryPolicy(initial_seconds=1, step_seconds=2, maximum_seconds=6)
+    assert [policy.delay_for_failure(value) for value in range(1, 6)] == [1, 3, 5, 6, 6]
+
+
+def test_explicit_checkout_errors_retry_past_ambiguous_limit_until_success():
+    portal = FakePortal(retryable_checkout_failures=8)
+    coordinator = WatcherCoordinator(
+        lambda: portal,
+        live_purchases_allowed=True,
+        ambiguous_submit_retries=0,
+        checkout_retry_policy=CheckoutRetryPolicy(
+            initial_seconds=0.001,
+            step_seconds=0.001,
+            maximum_seconds=0.003,
+        ),
+    )
+    coordinator.start(payload_for(portal, dry_run=False))
+    coordinator.join(3)
+    assert coordinator.status()["phase"] == Phase.PURCHASED.value
+    assert portal.submitted == 9
+    assert coordinator.status()["next_poll_seconds"] is None
+
+
+def test_stop_interrupts_infinite_checkout_retry_backoff():
+    portal = FakePortal(retryable_checkout_failures=10_000)
+    coordinator = WatcherCoordinator(
+        lambda: portal,
+        live_purchases_allowed=True,
+        checkout_retry_policy=CheckoutRetryPolicy(
+            initial_seconds=10,
+            step_seconds=1,
+            maximum_seconds=10,
+        ),
+    )
+    coordinator.start(payload_for(portal, dry_run=False))
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        if coordinator.status()["next_poll_seconds"] == 10:
+            break
+        time.sleep(0.01)
+    else:
+        raise AssertionError(f"coordinator did not enter checkout backoff: {coordinator.status()}")
+
+    coordinator.stop()
+    coordinator.join(1)
+    assert coordinator.status()["phase"] == Phase.STOPPED.value
+    assert portal.submitted == 1
 
 
 def test_coordinator_accepts_split_seats_when_no_contiguous_pair_exists():

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -24,7 +25,13 @@ from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.support.ui import Select, WebDriverWait
 
 from .browser import BrowserPage
-from .errors import HumanActionRequired, PurchaseDisabled, PurchaseOutcomeUnknown, SiteChanged
+from .errors import (
+    HumanActionRequired,
+    PurchaseDisabled,
+    PurchaseOutcomeUnknown,
+    RetryableCheckoutError,
+    SiteChanged,
+)
 from .matching import normalize_title, title_matches
 from .models import MovieRequest, Seat
 from .ports import AmcPortal, Credentials, PortalShowtime, PurchaseResult
@@ -49,6 +56,14 @@ _PAYMENT_ACTION = (
     "3d secure",
 )
 _CONFIRMATION = ("order confirmed", "purchase confirmed", "thank you for your purchase", "confirmation number")
+_RETRYABLE_CHECKOUT_ERRORS = (
+    "an error has occurred",
+    "something went wrong",
+    "we encountered an error",
+    "unable to process your order",
+    "there was a problem processing your order",
+    "please try again",
+)
 _CVV_SELECTORS = (
     "input[autocomplete='cc-csc']",
     "input[name*='cvv' i]",
@@ -498,6 +513,10 @@ class SeleniumAmcPortal:
             and candidate.is_enabled()
         ]
 
+    def _retryable_checkout_error_present(self) -> bool:
+        text = self.page.body_text()
+        return any(marker in text for marker in _RETRYABLE_CHECKOUT_ERRORS)
+
     def submit_order(self, guard: PurchaseGuard) -> PurchaseResult:
         guard.require()
         if self.config.test_mode:
@@ -511,11 +530,13 @@ class SeleniumAmcPortal:
             raise SiteChanged("The final order button could not be identified unambiguously")
         button = buttons[0]
 
-        # One click per call. The coordinator may make a bounded retry when the
-        # confirmation result is ambiguous.
+        # One click per call. The coordinator distinguishes explicit temporary
+        # checkout failures from an ambiguous confirmation outcome.
         button.click()
+        clicked_at = time.monotonic()
         try:
             def confirmation_found(_driver: WebDriver) -> bool:
+                retryable_error_found = False
                 for handle in self.driver.window_handles:
                     self.driver.switch_to.window(handle)
                     self._ensure_allowed_url()
@@ -523,9 +544,22 @@ class SeleniumAmcPortal:
                         marker in self.page.body_text() for marker in _CONFIRMATION
                     ):
                         return True
+                    retryable_error_found |= self._retryable_checkout_error_present()
+                # Check every tab for confirmation before acting on an error in
+                # the checkout tab. The grace period avoids stale pre-click text.
+                if retryable_error_found and time.monotonic() - clicked_at >= 0.5:
+                    raise RetryableCheckoutError(
+                        "AMC reported a temporary error on the purchase screen"
+                    )
                 return False
 
-            WebDriverWait(self.driver, self.config.confirmation_timeout_seconds).until(confirmation_found)
+            WebDriverWait(
+                self.driver,
+                self.config.confirmation_timeout_seconds,
+                poll_frequency=0.2,
+            ).until(confirmation_found)
+        except RetryableCheckoutError:
+            raise
         except Exception as exc:
             self.leave_open()
             raise PurchaseOutcomeUnknown(

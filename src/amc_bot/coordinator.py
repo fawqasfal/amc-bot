@@ -9,7 +9,13 @@ from datetime import time as wall_time
 from threading import Event, Lock, Thread
 from typing import Any, Callable
 
-from .errors import HumanActionRequired, PurchaseOutcomeUnknown, RateLimited, SiteChanged
+from .errors import (
+    HumanActionRequired,
+    PurchaseOutcomeUnknown,
+    RateLimited,
+    RetryableCheckoutError,
+    SiteChanged,
+)
 from .models import MovieRequest, TimeWindow, WeeklyAvailability
 from .polling import AdaptiveDelay, PollOutcome, PollingPolicy
 from .ports import AmcPortal, Credentials, PortalShowtime, PurchaseResult
@@ -25,6 +31,31 @@ class SearchJob:
     dry_run: bool
     acknowledgement: str
     payment_cvv: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class CheckoutRetryPolicy:
+    """Bounded linear delay for explicit temporary purchase-screen errors."""
+
+    initial_seconds: float = 1.0
+    step_seconds: float = 1.0
+    maximum_seconds: float = 10.0
+
+    def __post_init__(self) -> None:
+        if self.initial_seconds <= 0:
+            raise ValueError("initial_seconds must be positive")
+        if self.step_seconds < 0:
+            raise ValueError("step_seconds cannot be negative")
+        if self.maximum_seconds < self.initial_seconds:
+            raise ValueError("maximum_seconds must be >= initial_seconds")
+
+    def delay_for_failure(self, failure_number: int) -> float:
+        if failure_number < 1:
+            raise ValueError("failure_number must be positive")
+        return min(
+            self.maximum_seconds,
+            self.initial_seconds + (failure_number - 1) * self.step_seconds,
+        )
 
 
 def availability_from_hour_tokens(tokens: list[str]) -> WeeklyAvailability:
@@ -92,6 +123,7 @@ class WatcherCoordinator:
         max_attempts: int = 2_160,
         max_runtime_seconds: float = 43_200,
         ambiguous_submit_retries: int = 5,
+        checkout_retry_policy: CheckoutRetryPolicy | None = None,
         showtime_refresh_seconds: float = 300.0,
         rng: random.Random | None = None,
     ) -> None:
@@ -109,6 +141,7 @@ class WatcherCoordinator:
         self.max_attempts = max_attempts
         self.max_runtime_seconds = max_runtime_seconds
         self.ambiguous_submit_retries = ambiguous_submit_retries
+        self.checkout_retry_policy = checkout_retry_policy or CheckoutRetryPolicy()
         self.showtime_refresh_seconds = showtime_refresh_seconds
         self.status_store = StatusStore()
         self._rng = rng
@@ -377,8 +410,14 @@ class WatcherCoordinator:
             return None
 
         ambiguous_failures = 0
+        retryable_checkout_failures = 0
         while not self._stop.is_set():
             try:
+                self.status_store.update(
+                    phase=Phase.CHECKOUT,
+                    message="Submitting the purchase",
+                    next_poll_seconds=None,
+                )
                 with self._irreversible_lock:
                     if self._stop.is_set():
                         return None
@@ -387,6 +426,22 @@ class WatcherCoordinator:
             except HumanActionRequired as exc:
                 if not self._pause_for_human(portal, exc):
                     return None
+            except RetryableCheckoutError:
+                retryable_checkout_failures += 1
+                delay = self.checkout_retry_policy.delay_for_failure(
+                    retryable_checkout_failures
+                )
+                self.status_store.update(
+                    phase=Phase.CHECKOUT,
+                    message=(
+                        "AMC reported a temporary checkout error; "
+                        f"retrying purchase in {delay:g}s "
+                        f"(retry {retryable_checkout_failures}, no limit)"
+                    ),
+                    next_poll_seconds=delay,
+                )
+                if self._stop.wait(delay):
+                    return None
             except PurchaseOutcomeUnknown:
                 if ambiguous_failures >= self.ambiguous_submit_retries:
                     raise
@@ -394,6 +449,7 @@ class WatcherCoordinator:
                 self.status_store.update(
                     phase=Phase.CHECKOUT,
                     message=f"Confirmation was ambiguous; retrying purchase ({ambiguous_failures}/{self.ambiguous_submit_retries})",
+                    next_poll_seconds=None,
                 )
         portal.leave_open()
         self.status_store.update(
@@ -403,5 +459,6 @@ class WatcherCoordinator:
                 if result.reference
                 else "Purchase confirmed in the open AMC browser"
             ),
+            next_poll_seconds=None,
         )
         return result

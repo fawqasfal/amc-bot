@@ -29,5 +29,9 @@ class PurchaseOutcomeUnknown(WatcherError):
     """The order click occurred but confirmation could not be established."""
 
 
+class RetryableCheckoutError(WatcherError):
+    """AMC explicitly reported a temporary checkout failure that can be retried."""
+
+
 class NoSuitableSeats(WatcherError):
     """There are not enough valid seats for the requested ticket count."""

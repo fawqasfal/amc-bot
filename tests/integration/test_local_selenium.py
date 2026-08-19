@@ -79,6 +79,11 @@ PAYMENT = """<!doctype html><html><body>
 <label>CVV <input name="cvv" value=""></label>
 </body></html>"""
 
+PURCHASE_ERROR = """<!doctype html><html><body>
+<div role="alert">An error has occurred. Please try again.</div>
+<button>Place order</button>
+</body></html>"""
+
 
 class FixtureHandler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
@@ -94,6 +99,7 @@ class FixtureHandler(BaseHTTPRequestHandler):
             "/showtime/2": seat_map(),
             "/challenge": CHALLENGE,
             "/payment": PAYMENT,
+            "/purchase-error": PURCHASE_ERROR,
         }.get(path, "not found")
         self.send_response(200 if body != "not found" else 404)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -215,6 +221,16 @@ def test_local_human_gate_is_detected_and_never_bypassed(driver):
         driver.get(f"{base_url}challenge")
         with pytest.raises(HumanActionRequired):
             portal.page.ensure_not_blocked()
+
+
+def test_vague_purchase_error_is_recognized_as_retryable(driver):
+    with fixture_server() as base_url:
+        portal = SeleniumAmcPortal(
+            driver,
+            SeleniumPortalConfig(base_url=base_url, test_mode=True, element_timeout=1),
+        )
+        driver.get(f"{base_url}purchase-error")
+        assert portal._retryable_checkout_error_present()
 
 
 def test_test_mode_refuses_a_production_origin():
